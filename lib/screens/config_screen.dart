@@ -1,8 +1,6 @@
-import 'dart:async';
 import 'package:flutter/material.dart';
 import '../models/water_tank.dart';
 import '../services/storage_service.dart';
-import '../services/bluetooth_service.dart';
 
 class ConfigScreen extends StatefulWidget {
   @override
@@ -10,166 +8,207 @@ class ConfigScreen extends StatefulWidget {
 }
 
 class _ConfigScreenState extends State<ConfigScreen> {
-  String? _type;
+  String? _selectedType;
   double _capacity = 500;
-  double _tariff = 0.005;
+  double _height = 1.3;
+  double _topRadius = 0.4;
+  double _bottomRadius = 0.4;
 
-  late TextEditingController _tariffController;
-  bool _isConnected = false;
+  // 🔥 TABELAS DE CALIBRAÇÃO SÃO TODAS EM METROS
+  final Map<String, WaterTank> predefinedTanks = {
+    // CILÍNDRICAS
+    'Cilíndrica 310L': WaterTank.l310(),
+    'Cilíndrica 500L': WaterTank.l500(),
+    'Cilíndrica 1000L': WaterTank.l1000(),
 
-  StreamSubscription? _heightSubscription;
+    'Cilíndrica 1500L': WaterTank(
+      name: '1500L',
+      type: 'cilindrica',
+      capacityLiter: 1500,
+      tariffPerLiter: 0.005,
+      tankHeight: 1.8,
+      topRadius: 0.65,
+      bottomRadius: 0.65,
+      calibrationTable: {0.0: 0, 0.45: 375, 0.9: 750, 1.35: 1125, 1.8: 1500},
+    ),
+
+    'Cilíndrica 2000L': WaterTank(
+      name: '2000L',
+      type: 'cilindrica',
+      capacityLiter: 2000,
+      tariffPerLiter: 0.005,
+      tankHeight: 2.0,
+      topRadius: 0.7,
+      bottomRadius: 0.7,
+      calibrationTable: {0.0: 0, 0.5: 500, 1.0: 1000, 1.5: 1500, 2.0: 2000},
+    ),
+
+    // TRONCO-CÔNICAS
+    'Tronco 500L': WaterTank(
+      name: 'Tronco 500L',
+      type: 'tronco',
+      capacityLiter: 500,
+      tariffPerLiter: 0.005,
+      tankHeight: 1.2,
+      topRadius: 0.4,
+      bottomRadius: 0.35,
+      calibrationTable: {0.0: 0, 0.3: 125, 0.6: 250, 0.9: 375, 1.2: 500},
+    ),
+
+    'Tronco 1000L': WaterTank(
+      name: 'Tronco 1000L',
+      type: 'tronco',
+      capacityLiter: 1000,
+      tariffPerLiter: 0.005,
+      tankHeight: 1.8,
+      topRadius: 0.55,
+      bottomRadius: 0.45,
+      calibrationTable: {0.0: 0, 0.45: 250, 0.9: 500, 1.35: 750, 1.8: 1000},
+    ),
+
+    'Tronco 1500L': WaterTank(
+      name: 'Tronco 1500L',
+      type: 'tronco',
+      capacityLiter: 1500,
+      tariffPerLiter: 0.005,
+      tankHeight: 2.0,
+      topRadius: 0.65,
+      bottomRadius: 0.55,
+      calibrationTable: {0.0: 0, 0.5: 375, 1.0: 750, 1.5: 1125, 2.0: 1500},
+    ),
+  };
 
   @override
   void initState() {
     super.initState();
+    _loadSavedTank();
+  }
 
-    _tariffController = TextEditingController();
+  Future<void> _loadSavedTank() async {
+    final tank =
+        await StorageService.instance.getWaterTank() ??
+        WaterTank.defaultCylinder();
 
-    _loadTank();
+    setState(() {
+      // Seleciona o item corretamente pelo nome
+      _selectedType = predefinedTanks.entries
+          .firstWhere(
+            (entry) => entry.value.name == tank.name,
+            orElse: () => MapEntry('Manual', WaterTank.defaultCylinder()),
+          )
+          .key;
 
-    // Conexão BLE
-    BluetoothService.instance.connectToESP32();
-
-    _heightSubscription = BluetoothService.instance.heightStream.listen((
-      h,
-    ) async {
-      setState(() {});
-      // ainda não processa nada aqui
+      _capacity = tank.capacityLiter.toDouble();
+      _height = tank.tankHeight;
+      _topRadius = tank.topRadius;
+      _bottomRadius = tank.bottomRadius;
     });
   }
 
-  @override
-  void dispose() {
-    _tariffController.dispose();
-    _heightSubscription?.cancel();
-    super.dispose();
-  }
+  void _onSave() async {
+    WaterTank tank;
 
-  Future<void> _loadTank() async {
-    final tank = await StorageService.instance.getWaterTank();
-    if (tank != null) {
-      setState(() {
-        _type = tank.type;
-        _capacity = tank.capacityLiter.toDouble();
-        _tariff = tank.tariffPerLiter;
-        _tariffController.text = _tariff.toString();
-      });
+    if (_selectedType == 'Manual') {
+      tank = WaterTank(
+        name: 'Manual',
+        type: 'manual',
+        capacityLiter: _capacity.toInt(),
+        tariffPerLiter: 0.005,
+        tankHeight: _height,
+        topRadius: _topRadius,
+        bottomRadius: _bottomRadius,
+
+        // calibração mínima obrigatória (altura final → capacidade total)
+        calibrationTable: {0.0: 0, _height: _capacity},
+      );
     } else {
-      _tariffController.text = _tariff.toString();
+      tank = predefinedTanks[_selectedType!]!;
     }
-  }
-
-  void _save() async {
-    _tariff = double.tryParse(_tariffController.text) ?? _tariff;
-
-    var topRadius = null;
-    var tankHeight = null;
-    var bottomRadius = null;
-    final tank = WaterTank(
-      type: _type ?? 'cilindrica',
-      capacityLiter: _capacity.toInt(),
-      tariffPerLiter: _tariff,
-      topRadius: topRadius,
-      bottomRadius: bottomRadius,
-      tankHeight: tankHeight,
-      calibrationTable: {},
-    );
 
     await StorageService.instance.saveWaterTank(tank);
-    Navigator.pop(context);
-  }
 
-  void _toggleConnection() async {
-    if (_isConnected) {
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(const SnackBar(content: Text("Conexão BLE será mantida")));
-    } else {
-      await BluetoothService.instance.connectToESP32();
-      setState(() => _isConnected = BluetoothService.instance.isConnected!);
-    }
-  }
-
-  // ================================
-  //   BOTÃO DE CAPACIDADE PRÉ-PRONTA
-  // ================================
-  Widget _buildCapacityButton(int liters) {
-    return ChoiceChip(
-      label: Text("$liters L"),
-      selected: _capacity == liters.toDouble(),
-      onSelected: (_) {
-        setState(() => _capacity = liters.toDouble());
-      },
-    );
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(const SnackBar(content: Text('Configurações salvas!')));
   }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: const Text('Configurações')),
-      body: SingleChildScrollView(
-        padding: const EdgeInsets.all(16),
+      appBar: AppBar(title: const Text('Configurações da Caixa')),
+      body: Padding(
+        padding: const EdgeInsets.all(16.0),
         child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text('ESP32: ${_isConnected ? "Conectado" : "Desconectado"}'),
-            const SizedBox(height: 10),
-
-            ElevatedButton(
-              onPressed: _toggleConnection,
-              child: Text(_isConnected ? 'Manter Conexão' : 'Conectar ESP32'),
-            ),
-
-            const Divider(height: 30),
-
-            const Text('Tipo de caixa de água:'),
-            const SizedBox(height: 10),
-
-            DropdownButton<String>(
-              value: _type,
-              items: const [
-                DropdownMenuItem(
-                  value: 'cilindrica',
-                  child: Text('Cilíndrica'),
+            DropdownButtonFormField<String>(
+              value: _selectedType,
+              decoration: const InputDecoration(
+                labelText: 'Selecione o tipo da caixa',
+              ),
+              items: [
+                ...predefinedTanks.keys.map(
+                  (k) => DropdownMenuItem(value: k, child: Text(k)),
                 ),
-                DropdownMenuItem(
-                  value: 'tronco',
-                  child: Text('Tronco de cone'),
+                const DropdownMenuItem(
+                  value: 'Manual',
+                  child: Text('Manual (Configurar manualmente)'),
                 ),
               ],
-              onChanged: (v) => setState(() => _type = v),
-              hint: const Text('Selecione o tipo'),
+              onChanged: (val) {
+                setState(() {
+                  _selectedType = val;
+
+                  if (val != 'Manual' && predefinedTanks.containsKey(val)) {
+                    final t = predefinedTanks[val]!;
+                    _capacity = t.capacityLiter.toDouble();
+                    _height = t.tankHeight;
+                    _topRadius = t.topRadius;
+                    _bottomRadius = t.bottomRadius;
+                  }
+                });
+              },
             ),
 
             const SizedBox(height: 20),
-            const Text('Capacidade (Litros):'),
-            const SizedBox(height: 10),
 
-            Wrap(
-              spacing: 10,
-              runSpacing: 10,
-              children: [
-                _buildCapacityButton(310),
-                _buildCapacityButton(500),
-                _buildCapacityButton(1000),
-                _buildCapacityButton(1500),
-                _buildCapacityButton(2000),
-                _buildCapacityButton(5000),
-              ],
-            ),
+            // CAMPOS MANUAIS
+            if (_selectedType == 'Manual') ...[
+              TextFormField(
+                decoration: const InputDecoration(labelText: 'Capacidade (L)'),
+                initialValue: _capacity.toString(),
+                keyboardType: TextInputType.number,
+                onChanged: (v) => _capacity = double.tryParse(v) ?? 0,
+              ),
 
-            const SizedBox(height: 20),
-            const Text('Tarifa (R\$ por litro):'),
-            TextField(
-              controller: _tariffController,
-              keyboardType: TextInputType.numberWithOptions(decimal: true),
-            ),
+              TextFormField(
+                decoration: const InputDecoration(labelText: 'Altura (m)'),
+                initialValue: _height.toString(),
+                keyboardType: TextInputType.number,
+                onChanged: (v) => _height = double.tryParse(v) ?? 0,
+              ),
+
+              TextFormField(
+                decoration: const InputDecoration(
+                  labelText: 'Raio do Topo (m)',
+                ),
+                initialValue: _topRadius.toString(),
+                keyboardType: TextInputType.number,
+                onChanged: (v) => _topRadius = double.tryParse(v) ?? 0,
+              ),
+
+              TextFormField(
+                decoration: const InputDecoration(
+                  labelText: 'Raio da Base (m)',
+                ),
+                initialValue: _bottomRadius.toString(),
+                keyboardType: TextInputType.number,
+                onChanged: (v) => _bottomRadius = double.tryParse(v) ?? 0,
+              ),
+            ],
 
             const SizedBox(height: 30),
-            ElevatedButton(
-              onPressed: _save,
-              child: const Text('Salvar Configurações'),
-            ),
+
+            ElevatedButton(onPressed: _onSave, child: const Text('Salvar')),
           ],
         ),
       ),

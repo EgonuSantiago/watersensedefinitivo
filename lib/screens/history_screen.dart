@@ -10,12 +10,16 @@ class HistoryScreen extends StatefulWidget {
 
 class _HistoryScreenState extends State<HistoryScreen> {
   List<Consumption> _list = [];
-  String _selectedType = 'halfHour'; // tipo inicial
-  final Map<String, String> _typeLabels = {
-    'halfHour': '30 Minutos',
-    'daily': 'Diário',
-    'weekly': 'Semanal',
-    'monthly': 'Mensal',
+
+  // Tipo selecionado agora é do tipo enum
+  ConsumptionType _selectedType = ConsumptionType.minutes30;
+
+  // Labels amigáveis para exibição
+  final Map<ConsumptionType, String> _typeLabels = {
+    ConsumptionType.minutes30: '30 Minutos',
+    ConsumptionType.daily: 'Diário',
+    ConsumptionType.weekly: 'Semanal',
+    ConsumptionType.monthly: 'Mensal',
   };
 
   @override
@@ -28,22 +32,21 @@ class _HistoryScreenState extends State<HistoryScreen> {
     List<Consumption> data;
 
     switch (_selectedType) {
-      case 'daily':
+      case ConsumptionType.daily:
         data = await StorageService.instance.getDailyConsumptions();
         break;
-      case 'weekly':
+      case ConsumptionType.weekly:
         data = await StorageService.instance.getWeeklyConsumptions();
         break;
-      case 'monthly':
+      case ConsumptionType.monthly:
         data = await StorageService.instance.getMonthlyConsumptions();
         break;
-      case 'halfHour':
-      default:
+      case ConsumptionType.minutes30:
         data = await StorageService.instance.getHalfHourConsumptions();
         break;
     }
 
-    // Exibe os dados em ordem decrescente de timestamp
+    // Exibe em ordem mais recente primeiro
     setState(() => _list = data.reversed.toList());
   }
 
@@ -55,19 +58,17 @@ class _HistoryScreenState extends State<HistoryScreen> {
       appBar: AppBar(title: const Text('Histórico')),
       body: Column(
         children: [
-          // Dropdown para escolher o tipo de agregação
+          // Dropdown para escolher o tipo
           Padding(
             padding: const EdgeInsets.all(8.0),
-            child: DropdownButton<String>(
+            child: DropdownButton<ConsumptionType>(
               value: _selectedType,
-              items: _typeLabels.entries
-                  .map(
-                    (e) => DropdownMenuItem<String>(
-                      value: e.key,
-                      child: Text(e.value),
-                    ),
-                  )
-                  .toList(),
+              items: _typeLabels.entries.map((e) {
+                return DropdownMenuItem<ConsumptionType>(
+                  value: e.key,
+                  child: Text(e.value),
+                );
+              }).toList(),
               onChanged: (value) {
                 if (value != null) {
                   setState(() => _selectedType = value);
@@ -76,6 +77,7 @@ class _HistoryScreenState extends State<HistoryScreen> {
               },
             ),
           ),
+
           Expanded(
             child: _list.isEmpty
                 ? const Center(child: Text('Sem dados'))

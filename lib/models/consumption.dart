@@ -8,13 +8,13 @@ class Consumption {
   Consumption({
     required this.volumeChange,
     required this.timestamp,
-    this.type = ConsumptionType.minutes30, // padrão para medições normais
+    this.type = ConsumptionType.minutes30, // padrão
   });
 
   Map<String, dynamic> toJson() => {
     'volumeChange': volumeChange,
     'timestamp': timestamp.toIso8601String(),
-    'type': type.name, // usa o nome do enum para salvar
+    'type': type.name,
   };
 
   factory Consumption.fromJson(Map<String, dynamic> j) => Consumption(

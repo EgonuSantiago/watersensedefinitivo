@@ -1,144 +1,186 @@
 import 'dart:async';
 import 'dart:convert';
-import 'package:flutter/services.dart' show Uint8List;
-import 'package:flutter_bluetooth_serial/flutter_bluetooth_serial.dart';
+import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 import 'package:shared_preferences/shared_preferences.dart';
-import '../models/water_tank.dart';
-import 'storage_service.dart';
 
 class BluetoothService {
   BluetoothService._internal();
   static final BluetoothService instance = BluetoothService._internal();
 
+  // STREAM DE ALTURA
   final StreamController<double> _heightController =
       StreamController.broadcast();
   Stream<double> get heightStream => _heightController.stream;
 
-  BluetoothConnection? _connection;
+  // STREAM DE STATUS
+  final StreamController<bool> _connectionController =
+      StreamController.broadcast();
+  Stream<bool> get connectionStream => _connectionController.stream;
+
+  BluetoothDevice? _device;
+  BluetoothCharacteristic? _txCharacteristic;
+
   bool _isConnected = false;
-  bool _isConnecting = false;
-
-  Timer? _mockTimer;
-  double _current = 1.0;
-  bool _mock = false;
-
   bool get isConnected => _isConnected;
 
-  /// Alterna o modo de simulação
-  void toggleMockStream({bool forceOn = false}) {
-    if (forceOn)
-      _mock = true;
-    else
-      _mock = !_mock;
+  static const serviceUUID = "6E400001-B5A3-F393-E0A9-E50E24DCCA9E";
+  static const txUUID = "6E400003-B5A3-F393-E0A9-E50E24DCCA9E";
 
-    _mockTimer?.cancel();
+  bool _reconnectCooldown = false;
 
-    if (_mock) {
-      _mockTimer = Timer.periodic(const Duration(seconds: 3), (_) {
-        final choices = [-0.02, -0.01, 0.0, 0.01, 0.02];
-        choices.shuffle();
-        _current += choices.first;
-        if (_current < 0) _current = 0;
-        _heightController.add(_current);
-      });
+  // ============================================================
+  //  CONECTAR
+  // ============================================================
+  Future<void> connectToESP32() async {
+    if (_isConnected || _reconnectCooldown) return;
+
+    print("🔍 Escaneando por ESP32...");
+
+    await FlutterBluePlus.startScan(timeout: const Duration(seconds: 5));
+
+    BluetoothDevice? foundDevice;
+
+    await for (final results in FlutterBluePlus.scanResults) {
+      for (var r in results) {
+        if (r.device.name == "WaterSenseESP32") {
+          foundDevice = r.device;
+          print("📌 ESP32 encontrado!");
+          break;
+        }
+      }
+      if (foundDevice != null) break;
     }
+
+    FlutterBluePlus.stopScan();
+
+    if (foundDevice == null) {
+      print("❌ ESP32 não encontrado!");
+      _connectionController.add(false);
+      return;
+    }
+
+    _device = foundDevice;
+
+    await _connectDevice();
   }
 
-  /// Conecta ao ESP32 via Bluetooth clássico
-  Future<void> connectToESP32() async {
-    if (_isConnected || _isConnecting) return;
-
-    _isConnecting = true;
-
+  // ============================================================
+  //  CONECTAR DISPOSITIVO
+  // ============================================================
+  Future<void> _connectDevice() async {
     try {
-      final prefs = await SharedPreferences.getInstance();
-      List<BluetoothDevice> bondedDevices = await FlutterBluetoothSerial
-          .instance
-          .getBondedDevices();
+      print("🔗 Conectando ao ESP32...");
 
-      if (bondedDevices.isEmpty) {
-        print('⚠️ Nenhum dispositivo pareado encontrado.');
-        await _loadOfflineData();
-        toggleMockStream(forceOn: true);
-        _isConnecting = false;
-        return;
-      }
-
-      final device = bondedDevices.firstWhere(
-        (d) => d.name?.contains("ESP32") ?? false,
-        orElse: () => bondedDevices.first,
-      );
-
-      try {
-        _connection = await BluetoothConnection.toAddress(
-          device.address,
-        ).timeout(const Duration(seconds: 10));
-      } catch (e) {
-        print('❌ Timeout ou erro ao conectar ao ESP32: $e');
-        _isConnected = false;
-        await _loadOfflineData();
-        toggleMockStream(forceOn: true);
-        _isConnecting = false;
-        return;
-      }
+      // IMPORTANTE → NÃO USAR license=null
+      await _device!.connect(autoConnect: false);
 
       _isConnected = true;
-      print('✅ Conectado a ${device.name}');
+      _connectionController.add(true);
+      print("✅ ESP32 conectado!");
 
-      // Envia tipo de caixa selecionado
-      final selectedTank = await StorageService.instance.getWaterTank();
-      if (selectedTank != null && _connection != null) {
-        _connection!.output.add(utf8.encode('${selectedTank.capacityLiter}\n'));
-        await _connection!.output.allSent;
-      }
+      await _discoverServices();
 
-      // Recebe dados
-      _connection!.input
-          ?.listen((Uint8List data) {
-            final message = utf8.decode(data);
-            final height = double.tryParse(message.trim());
-            if (height != null) {
-              _heightController.add(height);
-              _saveOfflineData(height);
-            }
-          })
-          .onDone(() async {
-            _isConnected = false;
-            print('⚠️ Conexão encerrada.');
-            toggleMockStream(forceOn: true);
+      _device!.connectionState.listen((state) async {
+        if (state == BluetoothConnectionState.disconnected) {
+          if (_isConnected == false) return;
 
-            // tenta reconectar automaticamente
-            await Future.delayed(const Duration(seconds: 3));
-            await connectToESP32();
+          print("⚠️ ESP32 desconectado.");
+          _isConnected = false;
+          _connectionController.add(false);
+
+          _reconnectCooldown = true;
+
+          Future.delayed(const Duration(seconds: 8), () {
+            _reconnectCooldown = false;
+            connectToESP32();
           });
+        }
+      });
     } catch (e) {
-      print('❌ Erro geral ao conectar: $e');
-      _isConnected = false;
-      await _loadOfflineData();
-      toggleMockStream(forceOn: true);
-    } finally {
-      _isConnecting = false;
+      print("❌ Erro ao conectar: $e");
+      _connectionController.add(false);
     }
   }
 
-  /// Salva o último valor localmente
-  Future<void> _saveOfflineData(double height) async {
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setDouble('last_height', height);
+  // ============================================================
+  //  DISCOVER SERVICES + NOTIFY
+  // ============================================================
+  Future<void> _discoverServices() async {
+    var services = await _device!.discoverServices();
+
+    for (var s in services) {
+      if (s.uuid.toString().toLowerCase() == serviceUUID.toLowerCase()) {
+        for (var c in s.characteristics) {
+          var uuid = c.uuid.toString().toLowerCase();
+
+          // TX do ESP32
+          if (uuid == txUUID.toLowerCase()) {
+            print("📥 TX encontrada");
+            _txCharacteristic = c;
+
+            // Ativar notify corretamente
+            if (c.properties.notify) {
+              await c.setNotifyValue(true);
+            }
+
+            c.lastValueStream.listen((data) {
+              if (data.isEmpty) return;
+
+              try {
+                String msg = utf8.decode(data).trim();
+
+                double? valor = double.tryParse(msg);
+
+                if (valor != null) {
+                  print("📡 Recebido: $valor");
+                  _heightController.add(valor);
+                  _saveOfflineData(valor);
+                }
+              } catch (e) {
+                print("⚠️ Erro ao processar BLE: $e");
+              }
+            });
+          }
+        }
+      }
+    }
   }
 
-  /// Carrega o último valor salvo se desconectado
-  Future<void> _loadOfflineData() async {
-    final prefs = await SharedPreferences.getInstance();
-    final last = prefs.getDouble('last_height') ?? 0.0;
+  // ============================================================
+  //  SALVAR OFFLINE
+  // ============================================================
+  Future<void> _saveOfflineData(double height) async {
+    final p = await SharedPreferences.getInstance();
+    await p.setDouble('last_height', height);
+  }
+
+  Future<void> loadOfflineData() async {
+    final p = await SharedPreferences.getInstance();
+    double last = p.getDouble('last_height') ?? 0;
     _heightController.add(last);
   }
 
-  /// Desconecta do ESP32
+  // ============================================================
+  //  DESCONECTAR
+  // ============================================================
   Future<void> disconnect() async {
-    await _connection?.close();
-    _connection = null;
+    try {
+      await _device?.disconnect();
+    } catch (_) {}
+
+    _device = null;
+    _txCharacteristic = null;
+
     _isConnected = false;
-    _mockTimer?.cancel();
+    _connectionController.add(false);
+  }
+
+  // ============================================================
+  //  RECONNECT
+  // ============================================================
+  Future<void> reconnect() async {
+    await disconnect();
+    await Future.delayed(const Duration(milliseconds: 300));
+    await connectToESP32();
   }
 }
